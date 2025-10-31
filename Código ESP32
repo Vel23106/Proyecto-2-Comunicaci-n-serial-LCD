@@ -1,0 +1,120 @@
+// Universidad del Valle de Guatemala
+// BE3029 - Electronica Digital 2
+// Oscar Ramírez - Amy Velásquez
+// Proyecto 2
+// 21/10/2025
+/*•︶°︶•︶°︶•︶°︶• Librerías •︶°︶•︶°︶•︶°︶• */
+#include <Arduino.h>
+#include <stdint.h>
+#include <LiquidCrystal.h>
+#include <ESP32SPISlave.h>
+#include <string.h> 
+
+/*•︶°︶•︶°︶•︶°︶• Pines •︶°︶•︶°︶•︶°︶• */
+
+#define ledverde 4  
+#define ledblanco 15   
+#define ledazul 17
+
+#define rs 34
+#define en 35
+#define d4 26
+#define d5 26
+#define d6 27
+#define d7 14
+
+#define pot1 32
+
+/*•︶°︶•︶°︶• Variables globales •︶°︶•︶°︶• */
+//ESP32SPISlave slave;
+//static constexpr size_t BUFFER_SIZE = 8;
+//static constexpr size_t QUEUE_SIZE = 2;
+//uint8_t tx_buf[BUFFER_SIZE] {1, 2, 3, 4, 5, 6, 7, 8};
+//uint8_t rx_buf[BUFFER_SIZE] {0, 0, 0, 0, 0, 0, 0, 0};
+
+// Variables para el comando
+volatile bool command_received = false;
+int led;
+int tiempo=0;
+/*•︶°︶•︶°︶• Prototipos •︶°︶•︶°︶• */
+void controlleds (int led, int tiempo);
+
+
+/*•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶• SETUP °︶•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶• */
+void setup() {
+    Serial.begin(115200);
+    delay (2000);
+    
+    // Configuración de pines de LED
+    pinMode(ledverde, OUTPUT);
+    pinMode(ledblanco, OUTPUT);
+    pinMode(ledazul, OUTPUT);
+
+    digitalWrite(ledverde, LOW);
+    digitalWrite(ledblanco, LOW);
+    digitalWrite(ledazul, LOW);
+
+    // Configuración SPI Slave (VSPI usa pines por defecto: SCK=18, MOSI=23, MISO=19, SS=5)
+    //slave.setDataMode(SPI_MODE0);
+    //slave.setQueueSize(QUEUE_SIZE);
+    //slave.begin(VSPI);
+
+    // Inicializar buffers a cero
+   
+}
+
+/*•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶• LOOP °︶•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶• */
+void loop() {
+if (Serial.available() > 0) {
+        // 1. Leer la selección de la LED (el primer entero)
+        // ledSeleccionada será el número de LED (1, 2 o 3)
+        led = Serial.parseInt();
+
+        // 2. Leer el tiempo de encendido (el segundo entero)
+        // Serial.parseInt() ignora caracteres como paréntesis, comas y espacios.
+        tiempo = Serial.parseInt();
+
+        // 3. Limpiar el buffer serial
+        // Esto es esencial para descartar el caracter de fin de línea (\n)
+        while (Serial.available() > 0) {
+            Serial.read();
+        }
+
+        // 4. Validar la entrada y ejecutar el control de LEDs
+        if (led >= 1 && led <= 3) {
+            Serial.print("Comando recibido: LED ");
+            Serial.print(led);
+            Serial.print(", Tiempo: ");
+            Serial.print(tiempo);
+            Serial.println("ms");
+
+            // Llama a la función para encender y apagar
+            controlleds(led, tiempo);
+        } else if (led != 0) { // Si es 0 es porque no se leyó nada válido
+            Serial.print("Error: El numero de LED (");
+            Serial.print(led);
+            Serial.println(") debe ser 1, 2 o 3.");
+        }
+        // Reiniciar las variables después de leer/procesar
+        led = 0;
+        tiempo = 0;
+
+    }
+    
+}
+
+/*•︶°︶•︶°︶• Funciones auxiliares •︶°︶•︶°︶• */
+
+void controlleds (int sl, int ts) {
+    if (sl==1){
+      digitalWrite(ledblanco,HIGH);
+    } else if (sl==2){
+      digitalWrite(ledverde,HIGH);
+    } else if (sl==3){
+      digitalWrite(ledazul,HIGH);
+    }
+    delay(ts);
+    digitalWrite(ledblanco,LOW);
+    digitalWrite(ledverde,LOW);
+    digitalWrite(ledazul,LOW);
+  }
