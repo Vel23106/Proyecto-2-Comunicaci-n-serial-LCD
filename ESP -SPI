@@ -18,7 +18,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "stdint.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -28,17 +27,20 @@
 
 char buffer[32];
 uint8_t buffer_index = 0;
-char valor_led;
-char valor_tiempo[5];
 volatile uint8_t modo = 0;
 volatile uint8_t dato_recibido = 0;
 volatile uint8_t comando_completo = 0;
+volatile uint8_t esperando_datos = 0;
+//Separar datos
+int led = 0;
+int tiempo = 0;
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+#define ESP32_CS_Pin GPIO_PIN_6
+#define ESP32_CS_GPIO_Port GPIOB
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -68,8 +70,10 @@ static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 void transmit_uart(char *string);
 void mostrar_menu(void);
-void separar(void);
 void enviar_spi(void);
+void separar(void);
+void procesar_entrada_spi(char c);
+void limpiar_buffer(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -79,22 +83,33 @@ void transmit_uart (char *string){
 	HAL_UART_Transmit(&huart2, (uint8_t*) string , len, 200);
 }
 
+// Función para limpiar buffer (se repite mucho)
+void limpiar_buffer(void) {
+    memset(buffer, 0, sizeof(buffer));
+    buffer_index = 0;
+}
+
+
 //Función para menú
 void mostrar_menu (void){
 	transmit_uart("\n=== MENU DE OPCIONES ===\n");
 	transmit_uart("1. Controlar dispositivo SPI\n");
 	transmit_uart("2. Obtener medición de Sensor I2C\n");
-	transmit_uart("Seleccione una opcion (1-2): ");
+	transmit_uart("Seleccione una opcion (1-2):\n");
 }
 
 void procesar_menu(char opcion) {
     if (opcion == '1') {
         transmit_uart("\r\nOpción 1 seleccionada - SPI\r\n");
-        transmit_uart("Ingrese LED,tiempo (Ejemplo: 1,500): ");
+        transmit_uart("Ingrese LED,tiempo (Ejemplo: 1,500):\r\n");
+
+        // LIMPIAR BUFFER ANTES de cambiar a modo 1
+        limpiar_buffer();
+
+        //Cambio de modo
         modo = 1;
-        // Limpiar el buffer para nuevo comando
-        memset(buffer, 0, sizeof(buffer));
-        buffer_index = 0;
+        esperando_datos = 1;
+
     } else if (opcion == '2') {
         transmit_uart("\r\nOpción 2 seleccionada - I2C\r\n");
         // Aquí iría el código para I2C
@@ -106,48 +121,111 @@ void procesar_menu(char opcion) {
     }
 }
 
-//Función para enviar comando SPI
-void enviar_spi(void){
-    uint8_t led_int = valor_led - '0';  // Convertir char '1' a int 1
-    uint16_t tiempo_int = (uint16_t)atol(valor_tiempo);
+// Función para procesar entrada en modo SPI
+void procesar_entrada_spi(char c) {
+    // Echo del carácter recibido (para que el usuario vea lo que escribe)
+    char echo[2] = {c, '\0'};
+    HAL_UART_Transmit(&huart2, (uint8_t*)echo, 1, 100);
 
-    // Debug de lo que se va a enviar
-    char debug_spi[60];
-    sprintf(debug_spi, "Enviando - LED: %d, Tiempo: %lu ms\r\n", led_int, tiempo_int);
-    transmit_uart(debug_spi);
-
-    // ENVIAR VARIABLE 1: LED (1 byte)
-    HAL_GPIO_WritePin(ESP32_CS_GPIO_Port, ESP32_CS_Pin, GPIO_PIN_RESET);
-    HAL_Delay(5);
-
-    HAL_SPI_Transmit(&hspi1, &led_int, 1, HAL_MAX_DELAY);  // Enviar variable LED
-    HAL_Delay(2);
-
-    // ENVIAR VARIABLE 2: TIEMPO (4 bytes)
-    HAL_SPI_Transmit(&hspi1, (uint8_t*)&tiempo_int, 4, HAL_MAX_DELAY);  // Enviar variable tiempo completa
-
-    HAL_Delay(5);
-    HAL_GPIO_WritePin(ESP32_CS_GPIO_Port, ESP32_CS_Pin, GPIO_PIN_SET);
-    transmit_uart("\r\nComando enviado por SPI\r\n");
-}
-
-//Función para separar el dato recibido
-void separar(void) {
-    char *token = strtok(buffer, ",");
-    if (token != NULL) {
-        valor_led = token[0]; // Primer carácter es el LED
-
-        token = strtok(NULL, ",");
-        if (token != NULL) {
-            strncpy(valor_tiempo, token, sizeof(valor_tiempo)-1); // Segundo caracter es el tiempo
-            valor_tiempo[sizeof(valor_tiempo)-1] = '\0'; // Asegurar terminación nula
+    // Si es Enter, procesar comando
+    if (c == '\r' || c == '\n') {
+        if (buffer_index > 0) {
+            buffer[buffer_index] = '\0'; // Terminar string
+            transmit_uart("\r\n"); // Nueva línea después del enter
+            comando_completo = 1;
+            dato_recibido = 1;
+            esperando_datos = 0;
         } else {
-            transmit_uart("Error: Formato incorrecto. Use: led,tiempo\r\n");
+            transmit_uart("\r\nIngrese comando: ");
         }
-    } else {
-        transmit_uart("Error: Comando vacío\r\n");
+    }
+    // Si es backspace (127 en algunas terminales, 8 en otras)
+    else if (c == 127 || c == 8) {
+        if (buffer_index > 0) {
+            buffer_index--;
+            buffer[buffer_index] = '\0';
+            transmit_uart("\b \b"); // Borrar carácter en terminal
+        }
+    }
+    // Carácter válido para comando SPI
+    else if (isalnum(c) || c == ',' || c == ' ') {
+        if (buffer_index < sizeof(buffer) - 1) {
+            buffer[buffer_index++] = c;
+        } else {
+            transmit_uart("\r\nBuffer lleno. Presione Enter para procesar.\r\n");
+        }
+    }
+    // Carácter no válido
+    else {
+        // Ignorar caracteres no válidos
     }
 }
+
+//Función para separar
+void separar(void){
+    char *token;
+    char *rest = buffer;
+
+    // Primer token - LED
+    token = strtok_r(rest, ",", &rest);
+    if (token != NULL) {
+        led = atoi(token);
+    } else {
+        led = 0;
+    }
+
+    // Segundo token - Tiempo
+    token = strtok_r(rest, ",", &rest);
+    if (token != NULL) {
+        tiempo = atoi(token);
+    } else {
+        tiempo = 0;
+    }
+}
+
+//Función para enviar comando SPI
+void enviar_spi(void){
+
+    // DEBUG de verificación
+    char debug_spi[100];
+    transmit_uart("\r\n=== INICIANDO COMUNICACION SPI ===\r\n");
+    sprintf(debug_spi, "Comando: '%s'\r\n", buffer);
+    transmit_uart(debug_spi);
+    sprintf(debug_spi, "LED=%d, Tiempo=%dms\r\n", led, tiempo);
+    transmit_uart(debug_spi);
+
+    // Preparar datos para SPI
+    uint8_t spi_data[3];
+    spi_data[0] = (uint8_t)led;           // Byte 0: LED (1, 2, o 3)
+    spi_data[1] = (uint8_t)(tiempo & 0xFF);        // Byte 1: Parte baja del tiempo
+    spi_data[2] = (uint8_t)((tiempo >> 8) & 0xFF); // Byte 2: Parte alta del tiempo
+
+    sprintf(debug_spi, "Bytes SPI: [0x%02X, 0x%02X, 0x%02X]\r\n",
+            spi_data[0], spi_data[1], spi_data[2]);
+    transmit_uart(debug_spi);
+
+    // Activar el slave select
+    transmit_uart("Activando CS...\r\n");
+    HAL_GPIO_WritePin(ESP32_CS_GPIO_Port, ESP32_CS_Pin, GPIO_PIN_RESET);
+    HAL_Delay(20);
+    HAL_StatusTypeDef spi_status = HAL_SPI_Transmit(&hspi1, spi_data, 3, 1000);
+
+    // Verificar resultado
+    if(spi_status == HAL_OK) {
+        transmit_uart("SPI: Transmisión EXITOSA\r\n");
+    } else {
+        sprintf(debug_spi, "SPI: Error en transmisión - Código: %d\r\n", spi_status);
+        transmit_uart(debug_spi);
+    }
+
+    HAL_Delay(20);
+    HAL_GPIO_WritePin(ESP32_CS_GPIO_Port, ESP32_CS_Pin, GPIO_PIN_SET);
+    transmit_uart("CS desactivado\r\n");
+
+    transmit_uart("=== DEBUG SPI FIN ===\r\n");
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -165,7 +243,6 @@ int main(void)
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
-
 
   /* USER CODE BEGIN Init */
 
@@ -197,36 +274,30 @@ int main(void)
   {
 
 	  if (dato_recibido == 1){
-		  dato_recibido =0;
+		  dato_recibido = 0;
 		  if (modo == 0){
 			  //Menu principal
 			  procesar_menu(buffer[0]);
-		  } else if (modo == 1 && comando_completo == 1){
-			  // Comando completo es para enviar el buffer completo con espacios
+			  limpiar_buffer();
+		  }
+		  else if (modo == 1 && comando_completo == 1){
+			  // Comando completo es para enviar el buffer completo
 				  comando_completo = 0;
 				  transmit_uart("\r\nProcesando comando SPI...\r\n");
-
-			      // Debug del buffer recibido
-			      char debug_msg[50];
-			      sprintf(debug_msg, "Buffer: '%s'\r\n", buffer);
-			      transmit_uart(debug_msg);
-
-				  separar();
-				  enviar_spi();
-
+			      separar();
+			      if (led != 0 && tiempo != 0){
+					  enviar_spi();
+			      } else{
+		                transmit_uart("ERROR: Formato incorrecto. Use: LED,TIEMPO (ej: 1,500)\r\n");
+			      }
 
 				  //Reiniciar menu
 				  modo = 0;
 				  mostrar_menu();
-				  //Limpiar buffer
-				  memset(buffer, 0, sizeof(buffer));
-				  buffer_index = 0;
-		          // Reiniciar recepción en posición 0
-		          HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
-
+				  limpiar_buffer();
 		  }
-		    // Si no es comando completo, seguir recibiendo
-		    HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
+          // Reiniciar recepción en posición 0
+          HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
 }
 
 	  HAL_Delay(10);
@@ -413,46 +484,26 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	// Verificar si es Enter para tomarlo como fin de comando
+	//Verificar si la interrupción vino del USART2
     if (huart->Instance == USART2) {
-        char debug_msg[50];
-        sprintf(debug_msg, "DEBUG: modo=%d, char='%c'\r\n", modo, buffer[buffer_index]);
-        transmit_uart(debug_msg);
+    	char caracter_recibido = buffer[buffer_index];
 
         if (modo == 0) {
-            // En modo menú, procesar inmediatamente cualquier carácter válido
-            if (buffer[buffer_index] == '1' || buffer[buffer_index] == '2') {
+            // Procesar  cualquier carácter válido segun las condiciones de la funcion de procesar menu
+            if (caracter_recibido == '1' || caracter_recibido == '2') {
                 dato_recibido = 1;
             } else {
                 // Carácter inválido, ignorar y seguir recibiendo
                 HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
             }
         }
-        else if (modo == 1) {
-            // En modo SPI, verificar si es Enter
-            if (buffer[buffer_index] == '\r' || buffer[buffer_index] == '\n') {
-                // Solo procesar si el buffer no está vacío
-                if (buffer_index > 0) {
-                    buffer[buffer_index] = '\0'; // Terminar string
-                    comando_completo = 1;
-                    dato_recibido = 1;
-                    transmit_uart("Debug: Comando completo recibido\r\n");
-                } else {
-                    HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
-                }
-        } else {
-            // Carácter normal - preparar recepción para la SIGUIENTE posición
-            if (buffer_index < sizeof(buffer) - 2) {
-                // IMPORTANTE: Primero incrementar el índice, luego recibir en la nueva posición
-                buffer_index++;
+        else if (modo == 1 && esperando_datos) {
+            // Modo SPI - procesar entrada de comando
+            procesar_entrada_spi(caracter_recibido);
+
+            // Solo continuar recibiendo si aún estamos esperando datos
+            if (esperando_datos) {
                 HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
-            } else {
-                // Buffer lleno, forzar comando completo
-                buffer[buffer_index + 1] = '\0'; // Terminar después del último carácter
-                comando_completo = 1;
-                dato_recibido = 1;
-                transmit_uart("Debug: Buffer lleno, comando forzado\r\n");
-            	}
             }
         }
     }
