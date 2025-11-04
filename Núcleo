@@ -26,14 +26,16 @@
 #include "stdlib.h"
 
 char buffer[32];
-uint8_t buffer_index = 0;
 volatile uint8_t modo = 0;
-volatile uint8_t dato_recibido = 0;
-volatile uint8_t comando_completo = 0;
-volatile uint8_t esperando_datos = 0;
 //Separar datos
 int led = 0;
 int tiempo = 0;
+;
+uint8_t TX_Buffer []="2";
+uint8_t RX_Buffer [1];
+uint8_t bufferi2c;
+uint8_t bufferr[1];
+
 
 /* USER CODE END Includes */
 
@@ -45,6 +47,7 @@ int tiempo = 0;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define deviceAddress 0x55
 
 /* USER CODE END PD */
 
@@ -54,6 +57,8 @@ int tiempo = 0;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+
 SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart2;
@@ -67,13 +72,16 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 void transmit_uart(char *string);
 void mostrar_menu(void);
-void enviar_spi(void);
 void separar(void);
-void procesar_entrada_spi(char c);
 void limpiar_buffer(void);
+void read(char* buffer, uint16_t max_len); // Función de lectura bloqueante
+void enviar_spi(void);
+void procesar_menu1(void);
+void nucleo(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -86,79 +94,81 @@ void transmit_uart (char *string){
 // Función para limpiar buffer (se repite mucho)
 void limpiar_buffer(void) {
     memset(buffer, 0, sizeof(buffer));
-    buffer_index = 0;
 }
 
+// Leer línea completa de UART
+void read(char* buffer, uint16_t max_len) {
+    uint16_t index = 0;
+    uint8_t received_char;
+    memset(buffer, 0, max_len);
+
+    while (index < (max_len - 1)) {
+        // Bloquea hasta recibir un carácter
+        if (HAL_UART_Receive(&huart2, &received_char, 1, HAL_MAX_DELAY) != HAL_OK) {
+            return;
+        }
+        HAL_UART_Transmit(&huart2, &received_char, 1, 100);
+        //Si se recibe un enter
+        if (received_char == '\r' || received_char == '\n') {
+            if (index > 0) break; // Comando completo
+        } else if (isalnum(received_char) || received_char == ',' || received_char == ' ') {
+            buffer[index++] = received_char;
+        }
+    }
+    buffer[index] = '\0';
+    transmit_uart("\r\n"); // Limpieza de línea
+}
 
 //Función para menú
-void mostrar_menu (void){
-	transmit_uart("\n=== MENU DE OPCIONES ===\n");
-	transmit_uart("1. Controlar dispositivo SPI\n");
-	transmit_uart("2. Obtener medición de Sensor I2C\n");
-	transmit_uart("Seleccione una opcion (1-2):\n");
-}
+void mostrar_menu(void) {
+    char opcion[2];
+    transmit_uart("\r\n=== MENU DE OPCIONES ===\r\n");
+    transmit_uart("1. Controlar dispositivo SPI\r\n");
+    transmit_uart("2. Obtener medición de Sensor I2C\r\n");
+    transmit_uart("Seleccione una opcion (1-2):\r\n");
 
-void procesar_menu(char opcion) {
-    if (opcion == '1') {
-        transmit_uart("\r\nOpción 1 seleccionada - SPI\r\n");
-        transmit_uart("Ingrese LED,tiempo (Ejemplo: 1,500):\r\n");
+    // Bloquea hasta recibir la opción
+    HAL_UART_Receive(&huart2, (uint8_t*)opcion, 1, HAL_MAX_DELAY);
 
-        // LIMPIAR BUFFER ANTES de cambiar a modo 1
-        limpiar_buffer();
+    // Nueva línea
+    HAL_UART_Transmit(&huart2, (uint8_t*)opcion, 1, 100);
+    transmit_uart("\r\n");
 
-        //Cambio de modo
+    if (opcion[0] == '1') {
         modo = 1;
-        esperando_datos = 1;
-
-    } else if (opcion == '2') {
-        transmit_uart("\r\nOpción 2 seleccionada - I2C\r\n");
-        // Aquí iría el código para I2C
-        transmit_uart("Funcionalidad I2C no implementada\r\n");
-        mostrar_menu();
+    } else if (opcion[0] == '2') {
+        modo = 2; // Estado para I2C
     } else {
-        transmit_uart("\r\nOpción inválida\r\n");
-        mostrar_menu();
+        transmit_uart("Opción inválida\r\n");
+        modo = 0;
     }
 }
 
-// Función para procesar entrada en modo SPI
-void procesar_entrada_spi(char c) {
-    // Echo del carácter recibido (para que el usuario vea lo que escribe)
-    char echo[2] = {c, '\0'};
-    HAL_UART_Transmit(&huart2, (uint8_t*)echo, 1, 100);
+void procesar_menu1() {
+	transmit_uart("\r\n--------------------------------\r\n");
+	    transmit_uart("Ingrese LED,tiempo (Ejemplo: 1,500):\r\n");
+	    transmit_uart("LED Roja=1, LED Verde=2, LED Azul=3\r\n");
 
-    // Si es Enter, procesar comando
-    if (c == '\r' || c == '\n') {
-        if (buffer_index > 0) {
-            buffer[buffer_index] = '\0'; // Terminar string
-            transmit_uart("\r\n"); // Nueva línea después del enter
-            comando_completo = 1;
-            dato_recibido = 1;
-            esperando_datos = 0;
-        } else {
-            transmit_uart("\r\nIngrese comando: ");
-        }
-    }
-    // Si es backspace (127 en algunas terminales, 8 en otras)
-    else if (c == 127 || c == 8) {
-        if (buffer_index > 0) {
-            buffer_index--;
-            buffer[buffer_index] = '\0';
-            transmit_uart("\b \b"); // Borrar carácter en terminal
-        }
-    }
-    // Carácter válido para comando SPI
-    else if (isalnum(c) || c == ',' || c == ' ') {
-        if (buffer_index < sizeof(buffer) - 1) {
-            buffer[buffer_index++] = c;
-        } else {
-            transmit_uart("\r\nBuffer lleno. Presione Enter para procesar.\r\n");
-        }
-    }
-    // Carácter no válido
-    else {
-        // Ignorar caracteres no válidos
-    }
+	    read(buffer, sizeof(buffer));
+
+	    separar(); // Usa tu función existente para obtener led y tiempo
+
+	    if (led >= 1 && led <= 3 && tiempo > 0) {
+	        enviar_spi(); // Ejecuta la función de envío SPI
+	    } else {
+	        transmit_uart("ERROR: Formato o valores incorrectos. Volviendo al menu.\r\n");
+	    }
+
+	    modo = 3; // Pasa a transición/regreso al menú
+}
+
+// Función de transición
+void nucleo(void){
+    HAL_Delay(500);
+    transmit_uart("--------------------------------\r\n");
+    transmit_uart("Regresando a Menú Principal\r\n");
+    transmit_uart("--------------------------------\r\n");
+    modo=0;
 }
 
 //Función para separar
@@ -259,12 +269,11 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_SPI1_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
   //Inicialización de la recepción del UART
-  HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
   transmit_uart("Sistema iniciado \r\n");
-  mostrar_menu();
 
   /* USER CODE END 2 */
 
@@ -272,35 +281,37 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	 HAL_I2C_Master_Receive(&hi2c1,(deviceAddress << 1)|0x01,(uint8_t *)RX_Buffer,1,HAL_MAX_DELAY);
 
-	  if (dato_recibido == 1){
-		  dato_recibido = 0;
-		  if (modo == 0){
-			  //Menu principal
-			  procesar_menu(buffer[0]);
-			  limpiar_buffer();
-		  }
-		  else if (modo == 1 && comando_completo == 1){
-			  // Comando completo es para enviar el buffer completo
-				  comando_completo = 0;
-				  transmit_uart("\r\nProcesando comando SPI...\r\n");
-			      separar();
-			      if (led != 0 && tiempo != 0){
-					  enviar_spi();
-			      } else{
-		                transmit_uart("ERROR: Formato incorrecto. Use: LED,TIEMPO (ej: 1,500)\r\n");
-			      }
+	  switch (modo) {
+	  	    case 0:
+	  	        mostrar_menu();
+	  	        break;
+	  	    case 1:
+	  	    	procesar_menu1();
+	  	        break;
+	  	    case 2:
+	            TX_Buffer[0]='2';  // Placeholder I2C - Aquí se llamará a tu función para solicitar el potenciómetro
+	            HAL_I2C_Master_Transmit(&hi2c1,(deviceAddress << 1)|0x00,TX_Buffer,1,HAL_MAX_DELAY);
+	            HAL_Delay(100);
+	            HAL_I2C_Master_Receive(&hi2c1,(deviceAddress << 1)|0x01,(uint8_t *)RX_Buffer,1,HAL_MAX_DELAY);
+	            HAL_Delay(20);
+	            HAL_UART_Receive_IT(&huart2, bufferr, 1);
+	  	      	transmit_uart("valor de potenciometro:\r\n");
+	            char msg[32];
+	            	sprintf(msg, "%d\r\n", RX_Buffer[0]);  // convierte el byte a texto
+	            	HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 200);
 
-				  //Reiniciar menu
-				  modo = 0;
-				  mostrar_menu();
-				  limpiar_buffer();
-		  }
-          // Reiniciar recepción en posición 0
-          HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
-}
-
-	  HAL_Delay(10);
+	            RX_Buffer[1]=0;
+	  	        modo = 3;
+	  	        break;
+	  	    case 3:
+	  	        nucleo();
+	  	        break;
+	  	    default:
+	  	        modo = 0;
+	  	        break;
+	  	}
 
 
 
@@ -359,6 +370,40 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_ENABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
 }
 
 /**
@@ -484,29 +529,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	//Verificar si la interrupción vino del USART2
-    if (huart->Instance == USART2) {
-    	char caracter_recibido = buffer[buffer_index];
-
-        if (modo == 0) {
-            // Procesar  cualquier carácter válido segun las condiciones de la funcion de procesar menu
-            if (caracter_recibido == '1' || caracter_recibido == '2') {
-                dato_recibido = 1;
-            } else {
-                // Carácter inválido, ignorar y seguir recibiendo
-                HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
-            }
-        }
-        else if (modo == 1 && esperando_datos) {
-            // Modo SPI - procesar entrada de comando
-            procesar_entrada_spi(caracter_recibido);
-
-            // Solo continuar recibiendo si aún estamos esperando datos
-            if (esperando_datos) {
-                HAL_UART_Receive_IT(&huart2, (uint8_t*)&buffer[buffer_index], 1);
-            }
-        }
-    }
+	//No usar interrupciones
 }
 /* USER CODE END 4 */
 
