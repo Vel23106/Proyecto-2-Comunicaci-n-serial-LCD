@@ -3,118 +3,207 @@
 // Oscar Ramírez - Amy Velásquez
 // Proyecto 2
 // 21/10/2025
+
 /*•︶°︶•︶°︶•︶°︶• Librerías •︶°︶•︶°︶•︶°︶• */
 #include <Arduino.h>
 #include <stdint.h>
 #include <LiquidCrystal.h>
 #include <ESP32SPISlave.h>
-#include <string.h> 
+#include <Wire.h>
 
 /*•︶°︶•︶°︶•︶°︶• Pines •︶°︶•︶°︶•︶°︶• */
 
-#define ledverde 4  
-#define ledblanco 15   
+#define ledverde 4
+#define ledrojo 15
 #define ledazul 17
 
-#define rs 34
-#define en 35
-#define d4 26
-#define d5 26
-#define d6 27
-#define d7 14
+#define rs 32
+#define en 33
+#define d4 27
+#define d5 14
+#define d6 26
+#define d7 13
 
-#define pot1 32
+#define pot1 35
+
+#define I2C_DEV_ADDR 0x55
+LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 
 /*•︶°︶•︶°︶• Variables globales •︶°︶•︶°︶• */
-//ESP32SPISlave slave;
-//static constexpr size_t BUFFER_SIZE = 8;
-//static constexpr size_t QUEUE_SIZE = 2;
-//uint8_t tx_buf[BUFFER_SIZE] {1, 2, 3, 4, 5, 6, 7, 8};
-//uint8_t rx_buf[BUFFER_SIZE] {0, 0, 0, 0, 0, 0, 0, 0};
+int cont=0;
+volatile float volt;
+volatile uint8_t cmd;
+char lastled = '-';
+volatile uint32_t pote;
+volatile uint16_t bt;
 
-// Variables para el comando
-volatile bool command_received = false;
-int led;
-int tiempo=0;
+volatile uint32_t lastTime = 0;
+
+//SPI
+ESP32SPISlave slave;
+static constexpr size_t BUFFER_SIZE = 8;
+static constexpr size_t QUEUE_SIZE = 1;
+
+uint8_t tx_buf[BUFFER_SIZE];
+uint8_t rx1_buf[BUFFER_SIZE];
+
+uint8_t valor_led;
+uint16_t valor_tiempo;
+
+
 /*•︶°︶•︶°︶• Prototipos •︶°︶•︶°︶• */
-void controlleds (int led, int tiempo);
+void control_leds(int led, int tiempo);
+void onRequest();
+void onReceive(int len);
 
 
-/*•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶• SETUP °︶•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶• */
 void setup() {
-    Serial.begin(115200);
-    delay (2000);
-    
-    // Configuración de pines de LED
-    pinMode(ledverde, OUTPUT);
-    pinMode(ledblanco, OUTPUT);
-    pinMode(ledazul, OUTPUT);
+  Serial.begin(115200);
+  pinMode(pot1,INPUT);
+  pinMode(ledrojo,OUTPUT);
+  pinMode(ledazul,OUTPUT);
+  pinMode(ledverde,OUTPUT);
 
-    digitalWrite(ledverde, LOW);
-    digitalWrite(ledblanco, LOW);
-    digitalWrite(ledazul, LOW);
+  digitalWrite(ledverde, LOW);
+  digitalWrite(ledrojo, LOW);
+  digitalWrite(ledazul, LOW);
 
-    // Configuración SPI Slave (VSPI usa pines por defecto: SCK=18, MOSI=23, MISO=19, SS=5)
-    //slave.setDataMode(SPI_MODE0);
-    //slave.setQueueSize(QUEUE_SIZE);
-    //slave.begin(VSPI);
+  lcd.begin(16,2);
+  lcd.clear();
 
-    // Inicializar buffers a cero
-   
+
+  //Para control de I2C
+  Wire.onReceive(onReceive);
+  Wire.onRequest(onRequest);
+  Wire.begin((uint8_t)I2C_DEV_ADDR);
+
+  //Para control de SPI
+  slave.setDataMode(SPI_MODE0);
+  slave.setQueueSize(QUEUE_SIZE);
+  slave.begin(VSPI);
+
+  memset(tx_buf, 0, BUFFER_SIZE);
+  memset(rx1_buf, 0, BUFFER_SIZE);
 }
 
-/*•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶• LOOP °︶•︶°︶•︶°︶•︶°︶•︶°︶•︶°︶• */
 void loop() {
-if (Serial.available() > 0) {
-        // 1. Leer la selección de la LED (el primer entero)
-        // ledSeleccionada será el número de LED (1, 2 o 3)
-        led = Serial.parseInt();
+  if (slave.hasTransactionsCompletedAndAllResultsReady(QUEUE_SIZE))
+  {
+    //Extraer datos
+    valor_led = rx1_buf[0];
+    valor_tiempo = (rx1_buf[2] << 8) | rx1_buf[1];
 
-        // 2. Leer el tiempo de encendido (el segundo entero)
-        // Serial.parseInt() ignora caracteres como paréntesis, comas y espacios.
-        tiempo = Serial.parseInt();
+    //Debug para verificar si coinciden los bytes
 
-        // 3. Limpiar el buffer serial
-        // Esto es esencial para descartar el caracter de fin de línea (\n)
-        while (Serial.available() > 0) {
-            Serial.read();
-        }
-
-        // 4. Validar la entrada y ejecutar el control de LEDs
-        if (led >= 1 && led <= 3) {
-            Serial.print("Comando recibido: LED ");
-            Serial.print(led);
-            Serial.print(", Tiempo: ");
-            Serial.print(tiempo);
-            Serial.println("ms");
-
-            // Llama a la función para encender y apagar
-            controlleds(led, tiempo);
-        } else if (led != 0) { // Si es 0 es porque no se leyó nada válido
-            Serial.print("Error: El numero de LED (");
-            Serial.print(led);
-            Serial.println(") debe ser 1, 2 o 3.");
-        }
-        // Reiniciar las variables después de leer/procesar
-        led = 0;
-        tiempo = 0;
-
+    Serial.print("SPIBytes HEX: [ ");
+    for(int i = 0; i < 3; i++) {
+      Serial.print("0x");
+      if(rx1_buf[i] < 0x10) Serial.print("0");
+      Serial.print(rx1_buf[i], HEX);
+      Serial.print(" ");
     }
-    
+    //Verificación de valores
+    Serial.println("]");
+    Serial.print("LED: ");
+    Serial.print(valor_led);
+    Serial.print(", Tiempo: ");
+    Serial.print(valor_tiempo);
+    Serial.println("ms");
+
+    //Validar y ejecutar el comando
+
+    if (valor_led >= 1 && valor_led <= 3 && valor_tiempo > 0) {
+      Serial.println("Ejecutando comando...");  
+      control_leds(valor_led, valor_tiempo);
+      } else {
+      Serial.println("ERROR: Comando SPI inválido");
+    }
+
+    // Limpiar buffer y re-encolar la siguiente transacción
+    memset(rx1_buf, 0, BUFFER_SIZE);
+    slave.queue(NULL, rx1_buf, BUFFER_SIZE);
+    slave.trigger();
+  }
+
+   if (slave.hasTransactionsCompletedAndAllResultsHandled()){
+        memset(rx1_buf, 0, BUFFER_SIZE);
+        slave.queue(NULL, rx1_buf, BUFFER_SIZE);
+        slave.trigger();
+        Serial.println("ESP32 iniciado - Listo para SPI e I2C (Re-encolado de seguridad)");
+    }   
+
+
+  lcd.setCursor(0,0);
+  lcd.print("Bit:");
+  lcd.setCursor(6,0);
+  lcd.print("Vol:");
+  lcd.setCursor(9,1);
+  lcd.print("V");
+  lcd.setCursor(11,0);
+  lcd.print("LED:");
+
+  pote=analogRead(pot1);
+  bt=map(pote,0,4095,0,255);
+  float volt = (float)pote * (3.3f / 4095.0f);
+
+  delay(100);
+
+    uint32_t CurrentTime = millis();
+if (CurrentTime - lastTime > 500) {
+  lcd.clear();
+  lcd.setCursor(0,1);
+  lcd.print(bt);
+
+  lcd.setCursor(6,1);
+  lcd.print(volt);
+
+  lcd.setCursor(14,1);
+  lcd.print(lastled);
+
+  lastTime=CurrentTime;
+}
+
 }
 
 /*•︶°︶•︶°︶• Funciones auxiliares •︶°︶•︶°︶• */
-
-void controlleds (int sl, int ts) {
-    if (sl==1){
-      digitalWrite(ledblanco,HIGH);
-    } else if (sl==2){
-      digitalWrite(ledverde,HIGH);
-    } else if (sl==3){
-      digitalWrite(ledazul,HIGH);
-    }
-    delay(ts);
-    digitalWrite(ledblanco,LOW);
-    digitalWrite(ledverde,LOW);
-    digitalWrite(ledazul,LOW);
+void control_leds(int led, int tiempo)
+{
+  // Apagar todos los LEDs primero
+  digitalWrite(ledrojo, LOW);
+  digitalWrite(ledverde, LOW);
+  digitalWrite(ledazul, LOW);
+  // Encender LED específico
+  switch(led) {
+    case 1:
+      digitalWrite(ledrojo, HIGH);
+      lastled='R';
+      break;
+    case 2:
+      digitalWrite(ledverde, HIGH);
+      lastled='V';
+      break;
+    case 3:
+      digitalWrite(ledazul, HIGH);
+      lastled='A';
+      break;
   }
+  delay(tiempo);
+  // Apagar después del tiempo
+  digitalWrite(ledrojo, LOW);
+  digitalWrite(ledverde, LOW);
+  digitalWrite(ledazul, LOW); 
+}
+
+void onRequest() {
+   Wire.write(bt);
+   Serial.print("Enviado a Nucleo:");
+   Serial.println(bt);
+}
+
+void onReceive(int len) {
+  while (Wire.available()) {
+    cmd=Wire.read();
+    Serial.print("Medido por comando: ");
+    Serial.println((char)cmd);
+  }
+}
